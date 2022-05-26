@@ -1,0 +1,273 @@
+---
+title: "Exploratory analysis for R. muscosa sierra data"
+output: html_notebook
+---
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+```
+
+# Load in data from Cherie
+
+```{r}
+amphib_dat = fread("../data/archival/other_data/Amphib_forR.csv")
+survey_dat = fread("../data/archival/other_data/Survey_forR.csv")
+swab_dat = fread("../data/archival/other_data/SwabData_forR.csv")
+swabresults_dat = fread("../data/archival/other_data/SwabResults_forR.csv")
+lake_dat = fread("../data/archival/other_data/Lake.csv")
+```
+
+
+# Load in data from Roland
+
+```{r}
+count_dat = fread("../data/archival/ramu_counts_nov2020.csv")
+load_dat = fread("../data/archival/ramu_bdload_nov2020.csv")
+site_dat = fread("../data/archival/sites_nov2020.csv")
+```
+
+
+# Merging data from Roland
+
+```{r}
+
+# Format datetimes
+count_dat[, datetime:=as.POSIXct(visit_date, format="%Y-%m-%d")][, year:=year(datetime)]
+load_dat[, datetime:=as.POSIXct(visit_date, format="%Y-%m-%d")][, year:=year(datetime)]
+
+# Get maximum counts per site per year for each lifestage
+cast_counts = count_dat[, .(amphib_max=max(stage_count)), by=.(site_id, year, visual_life_stage)][
+                       visual_life_stage != ""] %>%  dcast(site_id + year ~ visual_life_stage,  value.var="amphib_max", fill=0)
+
+# Merge load data and count data.
+roland_full = merge(load_dat, cast_counts, by=c("site_id", "year"), all.x=T)
+
+# Check the row number is unchanged
+dim(roland_full)
+dim(load_dat)
+
+```
+
+# Merging the data from Cherie
+
+Merge different data files using the following steps
+
+```{r}
+colnames(swabresults_dat)
+head(swab_dat, 20)
+head(swabresults_dat, 20)
+head(amphib_dat, 20)
+head(lake_dat, 20)
+head(survey_dat)
+
+# NOTE: FOR NOW, average over replicate swabs. Will want to account for this in future models
+swabresults_dat_avg = swabresults_dat[ , .(ze=mean(ze)), by=.(swab_id)]
+
+# Link swab data and lake data
+comb_dat =  merge(swab_dat, swabresults_dat_avg, by=c("swab_id")) %>%
+            merge(lake_dat, by="lake_id")
+comb_dat[, datetime:=as.POSIXct(swabbing_date, format="%m/%d/%y")][, year:=year(datetime)]
+
+# Get yearly counts by lifestage by lake by species. Taking the max if there are multiple counts within a year. CHECK
+amphib_dat[, datetime:=as.POSIXct(survey_date, format="%m/%d/%Y", tz="GMT")][, year:=year(datetime)]
+max_counts = amphib_dat[, .(amphib_max=max(amphib_number)), by=.(lake_id, amphib_species, amphib_life_stage, year)][
+                        amphib_species %in% c("RAMU", "HYRE")]
+
+# Cast for merging
+cast_max_counts = dcast(max_counts, lake_id + year ~ amphib_life_stage + amphib_species,  value.var="amphib_max", fill=0)
+
+# Combine count data by year by lake with swab data by year by lake
+cherie_full = merge(comb_dat, cast_max_counts, by=c("lake_id", "year"), all.x=T)
+```
+
+Some data checks on the Cherie data merge
+
+```{r}
+# Check the row numbers haven't changed
+dim(cherie_full)
+dim(comb_dat)
+
+# There do seem to be swabs from lakes without corresponding survey data.  Let's check those out.
+missing_survey = cherie_full[is.na(Tadpole_HYRE)]
+
+# Unique lake by year swab events that don't have surveys? I probably just have an old file! 
+unique(paste0(missing_survey$lake_id, "_", missing_survey$year))
+
+# Check....yeah 10081 in 2013 in not in the survey data
+amphib_dat[lake_id == 10081]
+
+# Goes up to 2014 for some lakes
+max(amphib_dat$year)
+```
+
+## Identifying failed invasions
+
+For a failed invasion, let's look at lake-level infection status through time and identify when lakes transition from 1 -> 0
+
+
+```{r}
+
+# Just look at RAMU and identify when any swabs are positive in a lake for a given year
+bd_status_cherie = cherie_full[amphib_species == "RAMU"][, .(
+                         bd_pos=as.numeric(any(ze > 0)), 
+                         num_swabs=length(ze), 
+                         num_pos=sum(ze > 0),
+                         mean_logload=mean(log10(ze[ze > 0])),
+                         host_survey=(unique(Adult_RAMU) + unique(SubAdult_RAMU)),
+                         tadpole_present=as.numeric(unique(Tadpole_RAMU > 0) )), 
+                     by=.(lake_id, year)][order(lake_id, year)][order(lake_id, year)]
+
+# Rename column for consistency
+colnames(bd_status_cherie)[1] = "site_id"
+
+
+bd_status_roland = roland_full[, .(bd_pos=as.numeric(any(bd_load > 0)),
+                                   num_swabs=length(bd_load),
+                                   num_pos=sum(bd_load > 0),
+                                   mean_logload=mean(log10(bd_load[bd_load > 0])),
+                                   host_survey=(unique(adult) + unique(subadult)),
+                                   tadpole_present=as.numeric(unique(tadpole > 0))), by=.(site_id, year)][order(site_id, year)]
+
+bd_status_roland
+
+```
+
+# For all lakes, let's split up and look at time transitions
+
+```{r}
+data_sets = list(bd_status_cherie, bd_status_roland)
+stacked_data_sets = list()
+
+for(i in 1:length(data_sets)){
+  
+  fdat = data_sets[[i]]
+  unq_lakes = unique(fdat$site_id)
+  
+  all_new_dat = list()
+  
+  for(lake in unq_lakes){
+    
+    tdat = fdat[site_id == lake]
+    
+    n = nrow(tdat)
+    
+    if(n > 1) {
+      bdNow = tdat$bd_pos[1:(n - 1)]
+      bdNext = tdat$bd_pos[2:n]
+      yearNow = tdat$year[1:(n - 1)]
+      yearNext = tdat$year[2:n]
+      hostAbundNext = tdat$host_survey[2:n]
+      hostAbundNow = tdat$host_survey[1:(n - 1)]
+      tadNow = tdat$tadpole_present[1:(n - 1)]
+      tadNext = tdat$tadpole_present[2:n]
+      num_swabsNext = tdat$num_swabs[2:n]
+      meanBdNow = tdat$mean_logload[1:(n - 1)]
+      meanBdNext = tdat$mean_logload[2:(n)]
+      newdat = data.frame(yearNow=yearNow,
+                          yearNext=yearNext,
+                          bdNow=bdNow,
+                          bdNext=bdNext,
+                          site_id=lake,
+                          meanBdNow = meanBdNow,
+                          meanBdNext = meanBdNext,
+                          hostAbundNext=hostAbundNext,
+                          hostAbundNow=hostAbundNow,
+                          tadNow = tadNow,
+                          tadNext = tadNext,
+                          num_swabsNext=num_swabsNext)
+      all_new_dat[[lake]] = newdat
+    }
+    
+  }
+  
+  # Combine
+  stacked_data_sets[[i]] = data.table(do.call(rbind, all_new_dat))
+
+}
+
+bd_stack_cherie = stacked_data_sets[[1]]
+bd_stack_roland = stacked_data_sets[[2]]
+
+```
+
+
+Check out the lakes with possible loss of infections via 1 -> 0 transitions. 
+
+```{r}
+
+# NOTE: These might not all be loss of infection lakes. Could also be extinction going on. Accounting for that with host abund and
+# num_swabs
+
+ll_lakes = list()
+for(i in 1:length(stacked_data_sets)){
+  
+  tstack = stacked_data_sets[[i]]
+  loss_of_infection_lakes = unique(tstack[bdNow == 1 & bdNext == 0 & 
+                                          (yearNext - yearNow <= 3) &
+                                          (num_swabsNext > 4)]$site_id)
+  ll_lakes[[i]] = loss_of_infection_lakes
+}
+
+# Lakes in Roland's, but not Cherie's
+unq_roland = setdiff(ll_lakes[[2]], ll_lakes[[1]])
+unq_cherie = setdiff(ll_lakes[[1]], ll_lakes[[2]])
+unq_cherie
+
+```
+
+
+# Build a dataset with potential failed invasions such that we can being to classify which lakes likely had failed invasions
+
+
+```{r}
+all_potential_fi = unique(do.call(c, ll_lakes))
+
+fi_table = as.data.table(data.frame(site_id = all_potential_fi,
+                                    in_roland = all_potential_fi %in% ll_lakes[[2]],
+                                    in_cherie = all_potential_fi %in% ll_lakes[[1]]))
+
+# year transitions where infection is "lost" and hosts are still present
+ytrans = character(length(fi_table$site_id))
+numswabs = array(NA, dim=length(ytrans))
+for(i in 1:length(fi_table$site_id)){
+  
+  lid = fi_table$site_id[i]
+  
+  if(lid %in% ll_lakes[[2]]){
+    tdat = bd_stack_roland[site_id == lid][bdNow == 1 & bdNext == 0 & 
+                                          (yearNext - yearNow <= 3) &
+                                          (num_swabsNext > 4)]
+  } else{
+    tdat = bd_stack_cherie[site_id == lid][bdNow == 1 & bdNext == 0 & 
+                                          (yearNext - yearNow <= 3) &
+                                          (num_swabsNext > 4)]
+  }
+  
+  year_trans = paste(paste(paste(tdat$yearNow, sep="-"), "->", paste(tdat$yearNext, sep="-")), collapse=", ")
+  ytrans[i] = year_trans
+  numswabs[i] = paste(tdat$num_swabsNext, collapse = ", ")
+  
+}
+
+fi_table[, loss_years:=ytrans][, num_swabs_at_year_tplus1to3:=numswabs]
+fi_table
+
+```
+
+Merge to site data
+
+```{r}
+tsite_dat = site_dat[, .(id, area, jurisdiction)]
+colnames(tsite_dat)[1] = "site_id"
+fi_table_w_site_features = merge(fi_table, tsite_dat, by=c("site_id"))
+
+# Add ranking column
+fi_table_w_site_features$failed_invasion_ranking = NA
+
+# Save the candidate lakes with potential loss of infection
+fwrite(fi_table_w_site_features, "../data/formatted/candidate_failed_invasion_sites.csv")
+
+```

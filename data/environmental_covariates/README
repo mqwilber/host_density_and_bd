@@ -1,0 +1,25 @@
+## Files and directories in environmental_covariates
+
+
+`cdec_snowpack_april1.csv`: Generated from "../code/extract_snowdepth.R". Contains columns
+	- CDEC: The CDEC location name nearest the lake id
+	- year: The year that the snow water equivalent on April 1 was measured
+	- lake_id: The lake id in Roland Knapp's Sierra Nevada dataset
+	- SWEmm: The snow water equivalents measured at the CDEC station
+
+`lake_cdec_distances.csv`: Generated from "../code/extract_snowdepth.R". For each lake in Roland Knapp's database identifies the closest CDEC station and the distance from that CDEC station in km.  
+	- CDEC: CDEC station name
+	- id: Lake id
+	- min_dist_km: Distance between CDEC and lake id
+	- elevation_cdec: elevation of CDEC station
+	- All other columns as described in ../archival/sites_nov2020_metadata.txt
+
+`summer_lake_temperatures.csv`: Generated from "../code/extract_temperatures.R". For each lake in Roland Knapp's lake database and each year from 2000-2020. Temperatures from June-September
+	- lake_id: Lake id from R Knapp's database
+	- year: Year of temperature data
+	- min_summer_temp_C: Minimum mean daily summer temperatures in C from June to September
+	- max_summer_temp_C: Maximum mean daily summer temperatures in C from June to September
+
+
+ 
+

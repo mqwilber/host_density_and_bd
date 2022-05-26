@@ -1,0 +1,35 @@
+name: r_env_density_analysis
+channels:
+ - conda-forge
+dependencies:
+  - r-base=4.1
+  - r-data.table #=1.12.2
+  - r-rstan #=2.18.2
+  - r-ggplot2 #=3.1.1
+  - r-stringr #=1.4.0
+  - r-nlme #=3.1_139
+  - r-loo #=2.1.0
+  - r-magrittr #=1.5
+  - r-lubridate #=1.7.4
+  - r-dplyr #=0.8.0.1
+  - r-raster #=2.8_19
+  - r-sp #=1.3_1
+  - r-rgdal #=1.4_4
+  - r-ncdf4 #=1.16.1
+  - r-expm #=0.999_4
+  - r-knitr #=1.22
+  - r-bh
+  # Installed in runall
+  # - r-brms
+  # - r-patchwork
+  - python>=3.6
+  - ipython=7.8.0
+  - jupyter=1.0.0
+  - numpy=1.21.0
+  - pandas=1.2.4
+  - scipy=1.6.2
+  - matplotlib=3.4.2
+  - seaborn=0.9.0
+  - pip=19.1.1=py37_0
+  - pip:                            # Packages installed from PyPI
+    - jedi==0.17.2

@@ -1,0 +1,387 @@
+---
+title: "Does density affect infection load?"
+output: html_notebook
+---
+
+```{r}
+library(data.table)
+library(rstan)
+library(ggplot2)
+library(stringr)
+library(brms)
+```
+
+## Analysis III: Does host density affect infection load?
+
+```{r}
+anal_dat = fread("../data/candidate_datasets/analysisIII_loadanddensity.csv")
+```
+
+## Run a SEM analysis on the data
+
+The hypothesized model is
+
+$$
+\begin{aligned}
+  Host_{t} &= \beta_{11} Bd_{t - 1} + \epsilon_1 \\
+  Bd_{t} &= \beta_{21} Bd_{t - 1} + \beta_{22} Host_t + \epsilon_2
+\end{aligned}
+$$
+
+The full covariance matrix has 6 unique parameters so that would be the fully specified model. 
+
+
+```{r}
+# Location == 1 refers to yosemite populations
+yose_dat = anal_dat[location == 1]
+
+# Regression model with log10 frog abundance
+sm1_abund = lm(scale(mean_bd_present) ~ scale(mean_bd_past) + scale(log10(frog_abund_present)), data=yose_dat)
+bayes1_abund = brm(scale(mean_bd_present) ~ scale(mean_bd_past) + scale(log10(frog_abund_present)), data=yose_dat)
+sm_abund_no_trans = lm(mean_bd_present ~ mean_bd_past + log10(frog_abund_present), data=yose_dat)
+# plot(sm1_abund)
+summary(sm1_abund)
+confint(sm1_abund)
+bayes1_abund
+
+# Regression model with log10 frog density
+sm1_density = lm(scale(mean_bd_present) ~ scale(mean_bd_past) + scale(log10(density)), data=yose_dat)
+bayes1_density = brm(scale(mean_bd_present) ~ scale(mean_bd_past) + scale(log10(density)), data=yose_dat)
+sm_density_no_trans = lm(mean_bd_present ~ mean_bd_past + log10(density), data=yose_dat)
+# plot(sm1_density)
+summary(sm1_density)
+confint(sm1_density)
+
+# Regression model with past mean Bd affecting abundance
+sm2_abund = lm(scale(log10(frog_abund_present)) ~ scale(mean_bd_past), data=yose_dat)
+summary(sm2_abund)
+confint(sm2_abund)
+
+# Regression model with present mean Bd affecting abundance
+sm2_density = lm(scale(log10(density)) ~ scale(mean_bd_past), data=yose_dat)
+summary(sm2_density)
+confint(sm2_density)
+```
+
+Plot partial regression plots to display results
+
+```{r}
+library(patchwork)
+
+# Plot of host abundance
+
+residx = resid(lm(scale(log10(frog_abund_present)) ~ scale(mean_bd_past), data=yose_dat))
+residy = resid(lm(scale(mean_bd_present) ~ scale(mean_bd_past), data=yose_dat))
+
+p1 = ggplot() + geom_point(aes(x=residx, y=residy)) + stat_smooth(aes(x=residx, y=residy), method="lm", color='red') +
+                theme_classic() + xlab("Host abundance residuals") + ylab("Bd intensity residuals")
+
+residx_dens = resid(lm(scale(log10(density)) ~ scale(mean_bd_past), data=yose_dat))
+residy_dens = resid(lm(scale(mean_bd_present) ~ scale(mean_bd_past), data=yose_dat))
+
+p2 = ggplot() + geom_point(aes(x=residx_dens, y=residy_dens)) + stat_smooth(aes(x=residx_dens, y=residy_dens), method="lm", color='red') +
+                theme_classic() + xlab("Host density residuals") + ylab("Bd intensity residuals")
+
+fplot = p1 + p2 + plot_annotation(tag_levels = "A", tag_suffix = ".")
+fplot
+ggsave("../results/within_host_plot.pdf", width=7, height = 3.5)
+
+```
+
+## Translocation analysis
+
+Are load trajectories significantly different on a single host experiencing exponential pathogen growth compared to hosts in a high density population experiencing pathogen growth?
+
+```{r}
+library(ggplot2)
+library(data.table)
+library(rstan)
+```
+
+```{r}
+trans_data = fread("../data/archival/humphreys_translocation_2010.csv")
+trans_data[, visit_date:=as.POSIXct(visit_date, format="%m/%d/%y")]
+
+full_data = fread("../data/formatted/combined_Bd_data_for_analysis_allVES.csv")
+full_data[, visit_date:=as.POSIXct(visit_date, format="%m/%d/%y")]
+```
+
+```{r}
+site_dat = full_data[site_id == 50183 & year == 2010][, .(mean_bd=mean(log10(bd_load + 1))), by=.(visit_date)]
+site_dat
+```
+
+```{r}
+
+ggplot(data=trans_data[!is.na(pit_tag_ref)]) + 
+        geom_point(aes(x=visit_date, y=log10(bd_load + 1), group=pit_tag_ref, color=as.factor(site_id))) + 
+        geom_line(aes(x=visit_date, y=log10(bd_load + 1), group=pit_tag_ref, color=as.factor(site_id))) + theme_classic() +
+        geom_point(data=site_dat, aes(x=visit_date, y=mean_bd), shape=4) + 
+        geom_line(data=site_dat, aes(x=visit_date, y=mean_bd)) +
+        geom_point(data=full_data[site_id == 50183 & year == 2010], aes(x=visit_date, y=log10(bd_load + 1)))
+  
+```
+We want to test whether the maximum load for individuals in 50219, 50194, and 50170 differs from the maximum load in 50813
+
+```{r}
+
+# Subset and combine data
+swab_data = full_data[site_id == 50183 & year == 2010 & visit_date == as.POSIXct("2010-09-07", tz="UTC")]
+indiv_data = trans_data[site_id %in% c(50219, 50194, 50170) & visit_date > as.POSIXct("2010-09-07", tz="UTC")]
+comb_data = rbind(swab_data[ ,.(site_id, bd_load, density="high", source="donor")], 
+                  indiv_data[, .(site_id, bd_load, density="low", source="recipient")])
+comb_data$site_id = factor(comb_data$site_id, levels=c(50183, 50170, 50194, 50219))
+
+# remove outliers to test
+#comb_data = comb_data[log10(bd_load) > 5]
+```
+
+Fit a simple GLS model
+
+```{r}
+library(nlme)
+
+fit_null = gls(log10(bd_load) ~ 1, data=comb_data, method="ML")
+fit1 = gls(log10(bd_load) ~ density, data=comb_data, method="ML")
+
+varfunc = varIdent(form=~1|as.factor(site_id))
+fit2 = gls(log10(bd_load) ~ density, 
+           weights=varfunc, data=comb_data, method="ML")
+
+fit3 = gls(log10(bd_load) ~ 1, 
+           weights=varfunc, data=comb_data, method="ML")
+
+fit4 =  gls(log10(bd_load) ~ as.factor(site_id), 
+           weights=varfunc, data=comb_data, method="ML")
+
+summary(fit2)
+AIC(fit_null, fit1, fit2, fit3, fit4)
+
+summary(fit4)
+unique(comb_data$site_id)
+```
+
+Fit a Bayesian version with Stan
+
+```{r}
+
+mod1 = "
+data{
+
+  int N;
+  int P;
+  int D;
+  real y[N];
+  matrix[N, P] X;
+  matrix[N, D] S;
+} 
+parameters{
+  real beta0;
+  vector[P] beta;
+  vector<lower=0>[D] sigma;
+} 
+model{
+  y ~ normal(beta0 + X*beta, S*sigma);
+} generated quantities{
+ real log_lik[N];
+ 
+ for(i in 1:N){
+  log_lik[i] = normal_lpdf(y[i] | beta0 + row(X, i)*beta, row(S, i)*sigma);
+ }
+}
+"
+
+mod_greater = "
+data{
+
+  int N;
+  int P;
+  int D;
+  real y[N];
+  matrix[N, P] X;
+  matrix[N, D] S;
+} 
+parameters{
+  real beta0;
+  vector<lower=0>[P] beta;
+  vector<lower=0>[D] sigma;
+} 
+model{
+  y ~ normal(beta0 + X*beta, S*sigma);
+} generated quantities{
+ real log_lik[N];
+ 
+ for(i in 1:N){
+  log_lik[i] = normal_lpdf(y[i] | beta0 + row(X, i)*beta, row(S, i)*sigma);
+ }
+}
+"
+
+mod_less = "
+data{
+
+  int N;
+  int P;
+  int D;
+  real y[N];
+  matrix[N, P] X;
+  matrix[N, D] S;
+} 
+parameters{
+  real beta0;
+  vector<lower=0>[P] beta;
+  vector<lower=0>[D] sigma;
+} 
+model{
+  y ~ normal(beta0 - X*beta, S*sigma);
+} generated quantities{
+ real log_lik[N];
+ 
+ for(i in 1:N){
+  log_lik[i] = normal_lpdf(y[i] | beta0 - row(X, i)*beta, row(S, i)*sigma);
+ }
+}
+"
+```
+
+```{r}
+# Build data for stan
+tfit = lm(log10(bd_load) ~ as.factor(site_id), data=comb_data)
+X = model.matrix(tfit)
+X = X[, 2:ncol(X)]
+S = as.matrix(mltools::one_hot(as.data.table(comb_data$site_id)))
+```
+
+```{r}
+# Compile models
+smod = stan_model(model_code=mod1)
+smod_greater = stan_model(model_code=mod_greater)
+smod_less = stan_model(model_code=mod_less)
+```
+
+```{r}
+standata = list(N=nrow(X), P=ncol(X),
+                D=ncol(S), 
+                y=log10(comb_data$bd_load),
+                X=X,
+                S=S)
+# Fit models
+bfit1 = rstan::sampling(smod, data=standata, cores=4) # Means free to vary
+bfit_greater = rstan::sampling(smod_greater, data=standata, cores=4) # Recipient means greater than donor
+bfit_less = rstan::sampling(smod_less, data=standata, cores=4) # Recipient means less than donor
+```
+
+```{r}
+bfit1
+```
+
+Model comparison with LOO
+
+```{r}
+library(loo)
+
+loglik1 = extract_log_lik(bfit1, merge_chains = FALSE)
+loglik2 = extract_log_lik(bfit_greater, merge_chains = FALSE)
+loglik3 = extract_log_lik(bfit_less, merge_chains = FALSE)
+
+reff1 = relative_eff(exp(loglik1)) 
+reff2 = relative_eff(exp(loglik2))
+reff3 = relative_eff(exp(loglik3))
+
+loo1 = loo(loglik1, r_eff=reff1)
+loo2 = loo(loglik2, r_eff=reff2)
+loo3 = loo(loglik3, r_eff=reff3)
+
+comp = loo_compare(loo1, loo2, loo3)
+
+# View results
+comp
+loo1
+loo2
+loo3
+
+```
+Plot all translocation results together
+
+```{r}
+library(patchwork)
+
+colors = c('#1f78b4','#33a02c')
+colors2 = c('#33a02c', '#1f78b4', '#33a02c', '#33a02c')
+samp_size = comb_data[, .(n_samps=paste0("n=", .N)), by=.(site_id)]
+samp_size$sig = c("", "**", "ns" ,"**")
+
+# Extract lake perimeters to calculate density
+lake_dat = fread("../data/archival/sites_nov2020.csv")
+lake_dat_trun = lake_dat[id %in% unique(comb_data$site_id)][ , .(area=area, perimeter=2*sqrt(area / pi)*pi, site_id=id)]
+lake_dat_trun
+
+
+tplot = ggplot(comb_data) + geom_boxplot(aes(x=site_id, y=log10(bd_load), fill=source)) + 
+                            geom_text(data=samp_size, aes(x=site_id, y=3, label=n_samps)) +
+                            geom_text(data=samp_size, aes(x=site_id, y=7.5, label=sig), size=6) +
+                            theme_classic() + ylab("Bd infection intensity\nlog10(Bd load)") + xlab("Population ID") +
+                            scale_fill_manual(values=colors) +
+                            guides(fill=guide_legend(title=element_blank())) + 
+                            theme(legend.position = "none")
+
+# Assign lake id as the final lake id
+map = c("50183"="donor", "50170"="translocated", "50194"="translocated", "50219"="translocated")
+ind_map = trans_data[!is.na(pit_tag_ref) & site_id != 50183][, .(id=unique(site_id)), by=.(pit_tag_ref)]
+trans_data_up = merge(trans_data, ind_map, key="pit_tag_ref", all.x=T)
+trans_data_up$donor = plyr::revalue(as.character(trans_data_up$site_id), map)
+pit_mean = trans_data_up[!is.na(pit_tag_ref) & !is.na(id)][, .(mean_bd=mean(log10(bd_load + 1))), by=.(visit_date, id)]
+pit_mean$donor = plyr::revalue(as.character(pit_mean$id), map)
+
+tplot2 = ggplot(data=trans_data_up[!is.na(pit_tag_ref) & !is.na(id)]) + 
+        geom_point(aes(x=visit_date, y=log10(bd_load + 1), group=pit_tag_ref, color=as.factor(id)),
+                   alpha=0.15) + 
+        geom_line(aes(x=visit_date, y=log10(bd_load + 1), group=pit_tag_ref, color=as.factor(id)), alpha=0.15) +
+        geom_point(data=pit_mean, aes(x=visit_date, y=mean_bd, color=as.factor(id)), shape=18, size=6) +
+        geom_line(data=pit_mean, aes(x=visit_date, y=mean_bd, color=as.factor(id)), size=1) +
+        geom_point(data=site_dat, aes(x=visit_date, y=mean_bd, color="50183"), shape=18, size=6) + 
+        geom_line(data=site_dat, aes(x=visit_date, y=mean_bd, color="50183"), size=1) +
+        geom_point(data=full_data[site_id == 50183 & year == 2010],
+                   aes(x=visit_date, y=log10(bd_load + 1), color="50183"), alpha=0.15) +
+        scale_color_manual(values=colors2) +
+        xlab("Visit date in 2010") + ylab("Bd infection intensity\nlog10(Bd load + 1)") +
+        guides(color=guide_legend(title=element_blank())) + theme_classic() + 
+        theme(legend.position = "none", 
+              legend.background = element_rect(fill="transparent"),
+              axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+# Make plot of maximum adult abundance based on VES
+count_data = fread("../data/archival/ramu_counts_nov2020.csv")
+count_data[, visit_date:=as.POSIXct(visit_date, format="%m/%d/%y")][, year:=year(visit_date)]
+site_ids = unique(comb_data$site_id)
+max_counts = count_data[site_id %in% site_ids & year == 2010][, .(max_count=max(stage_count)), by=.(site_id, year, visual_life_stage)]
+
+max_counts$site_id = factor(max_counts$site_id, levels=c(50183, 50170, 50194, 50219))
+max_counts$source = c("translocated", "donor", "donor", "donor", "translocated", "translocated")
+lake_dat_trun$site_id = factor(lake_dat_trun$site_id, levels=c(50183, 50170, 50194, 50219))
+max_counts = merge(max_counts, lake_dat_trun, by="site_id", all.x=TRUE)
+
+diff = 0.17
+labels = data.frame(x=c(1 - diff, 1, 1 + diff, 2 - diff, 3 - diff, 4 - diff), 
+                    y=rep(10, 6), 
+                    label=c("Adult", "Subadult", "Tadpole","Adult", "Adult", "Adult"))
+tplot3 = ggplot(max_counts) + 
+            geom_bar(aes(x=as.factor(site_id), y=max_count, fill=source, group=visual_life_stage), 
+                     stat='identity', position=position_dodge(preserve = "single"), width=0.5, color='black') +
+            scale_y_log10() +
+            theme_classic() + ylab("Maximum abundance in 2010") + xlab("Population ID") +
+            scale_fill_manual(values=colors) +
+            guides(fill=guide_legend(title=element_blank()), ) + 
+            theme(legend.position = c(0.75, .9))
+tplot3 = tplot3 + geom_text(data=labels, aes(x=x, y=y, label=label), angle=90, size=2.5)
+
+
+
+layout = "
+AA
+BC
+"
+all_plot = tplot2 + tplot + tplot3 + plot_layout(design=layout) + plot_annotation(tag_levels = "A", tag_suffix = ".")
+all_plot
+ggsave("../results/combine_translocation_plot.pdf", plot=all_plot, width=8, height=8)
+```
