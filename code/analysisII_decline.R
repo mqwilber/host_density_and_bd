@@ -85,6 +85,7 @@ plot_fits = function(fit, name, adult_nm, standata, legend){
   yvals = 1 - (standata$end_abund / standata$start_abund)
 
   txvals = vals*sd_x + mean_x
+  print(txvals)
   tplot = ggplot() + geom_line(aes(x=txvals, y=probs)) + 
     geom_ribbon(aes(x=txvals, ymin=probs_lower, ymax=probs_upper), alpha=0.25) +
     geom_point(aes(x=xvals, y=yvals)) + 
@@ -159,8 +160,8 @@ for(nm in names(ddats)){
   standata2 = list(N=nrow(decline_dat),
                   P=1,
                   X=X1_density,
-                  mean_x=mean(log10(decline_dat$abund_max)),
-                  sd_x=sd(log10(decline_dat$abund_max)),
+                  mean_x=mean(log10(decline_dat$density)),
+                  sd_x=sd(log10(decline_dat$density)),
                   start_abund=as.integer(decline_dat$abund_max),
                   end_abund=as.integer(decline_dat$abund_min))
 

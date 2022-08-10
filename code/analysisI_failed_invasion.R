@@ -5,6 +5,7 @@ library(ggplot2)
 library(lubridate)
 library(loo)
 library(patchwork)
+library(bridgesampling)
 source("analysis_functions.R")
 
 ## This script analyzes whether host density affects failed Bd invasion probability
@@ -58,6 +59,7 @@ example_plots = TRUE # Plot example trajectories
 explore_density_effect = TRUE # Examine predictive power of null density effect
 make_tadpole_plots = TRUE # Make tadpole plots
 plot_all = TRUE # Plot all results together
+make_effect_plots = TRUE # Make effect plots for abundance
 
 ###################################
 #### Fit candidate models      ####
@@ -264,21 +266,164 @@ if(plot_all){
 
   all_base_a_and_d_dt = do.call(rbind, all_base_a_and_d)
 
+
+
   # Plot rarified and not rarified results
   for(rare in c(FALSE, TRUE)){
 
-    tplot = ggplot(all_base_a_and_d_dt[bayes != "naive" & rarify != rare]) + geom_point(aes(x=cutoff, y=med, color=abund_type), position=position_dodge(width=0.02)) +
-                      geom_errorbar(aes(x=cutoff, ymin=lower, ymax=upper, color=abund_type), position=position_dodge(width=0.02), width=0.01) +
+    unique(all_base_a_and_d_dt[bayes != "naive" & rarify != rare]$pretty_variable)
+
+    facet_bounds = data.frame(pretty_variable=c("\u03c9, density", 
+                                                "\u03c6, density",
+                                                "\u03c9, temperature",
+                                                "\u03c6, temperature",
+                                                "\u03c9, winter severity",
+                                                "\u03c6, winter severity",
+                                                "\u03c9, temp. x winter", 
+                                                "\u03c6, temp. x winter",
+                                                "\u03c9, tadpole",
+                                                "\u03c6, tadpole" ),
+                             ymin=c(-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -6.3, -6.3),
+                             ymax=c(1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.1, 0.1))
+    ff <- with(facet_bounds,
+           data.frame(med=c(ymin,ymax),
+                      pretty_variable=c(pretty_variable,pretty_variable)))
+
+    tplot = ggplot(all_base_a_and_d_dt[bayes != "naive" & rarify != rare]) + geom_point(aes(x=as.factor(round(cutoff, 2)), y=med, color=abund_type, shape=abund_type), position=position_dodge(width=0.25)) +
+                      geom_errorbar(aes(x=as.factor(round(cutoff, 2)), ymin=lower, ymax=upper, color=abund_type), position=position_dodge(width=0.25), width=0.01) +
                       geom_hline(aes(yintercept=0), linetype="dashed") + 
+                      # geom_point(data=ff, aes(x=NA, y=med)) +
                       scale_color_manual(values=c('#1b9e77','#d95f02','#7570b3')) +
-                      facet_wrap(~pretty_variable, scales='free', nrow=5) + theme_classic() + ylab("Effect size") + 
+                      facet_wrap(~pretty_variable, scales='free_y', nrow=5) + theme_classic() + ylab("Effect size") + 
                       xlab("\u03C1 \n (cutoff between low prev. and high prev. states)") + 
-                      guides(color=guide_legend(title=NULL))
+                      guides(color=guide_legend(title=NULL), shape=guide_legend(title=NULL))
 
     ggsave(paste0("../results/effect_sizes_across_rhos_rarify", !rare, ".jpg"), width=6, height=8)
 
   }
 
+}
+
+
+#######################################
+##### Make effect plots ###############
+#######################################
+
+# Plot effect plots
+if(make_effect_plots){
+
+  
+  cutoffs = c(0.25, 0.3333, 0.5)
+  combo = list(rarify=FALSE, subsample=NULL, include_subadults=TRUE, non_linear_temp=FALSE, log_tadpole_abundance=FALSE, include_snow_depth=TRUE)
+  a_or_d = "abund"
+
+  # Extract mean_sd
+  all_res = set_up_response_and_covariate_data(combo, full_data, temperature_data, snow_data)
+  anal1_dat = fread("../data/candidate_datasets/analysisI_failedinvasions_excluded.csv")
+  num_include = 3
+  greaterthan_ind = apply(as.matrix(anal1_dat[, 2:17, with=F]), 1, function(x) sum(x != -1)) >= num_include
+  include_sites = anal1_dat$site_id[greaterthan_ind]
+  imputed_cov_mats = all_res$imputed_cov_mats
+
+  mean_sd = flat_scale_unflat_mean_sd(log10(as.matrix(imputed_cov_mats[[a_or_d]][lakes %in% include_sites][order(lakes)][, 2:17, with=F]) + 1))
+  mean_sd_temp = flat_scale_unflat_mean_sd(as.matrix(imputed_cov_mats[['maxtemp']][lakes %in% include_sites][order(lakes)][, 2:17, with=F]))
+
+  # Extract model fits and data used to fit
+  param_estimates_temp = readRDS(paste0("../results/model_parameter_estimates_rarify_", 
+                                    combo$rarify, combo$subsample, "_include_subadults", 
+                                    combo$include_subadults,
+                                    "_nonlinear_temp", combo$non_linear_temp,
+                                    "_tadpolelog10", combo$log_tadpole_abundance, 
+                                    "_snowdepth", combo$include_snow_depth, ".rds"))
+  fitted_data_temp = readRDS(paste0("../results/fitted_data_rarify_", 
+                                    combo$rarify, combo$subsample, "_include_subadults", 
+                                    combo$include_subadults, 
+                                    "_nonlinear_temp", combo$non_linear_temp,
+                                    "_tadpolelog10", combo$log_tadpole_abundance, 
+                                    "_snowdepth", combo$include_snow_depth, ".rds"))
+
+
+  pest = param_estimates_temp[[a_or_d]]
+  cutoff_ind = 1 # Use data from 0.25 cutoff between LP and HP
+  psummary = summary(pest[[cutoff_ind]])$summary
+
+  trans_types = c("omega", "phi")
+
+  effect_plots = list()
+  effect_plots_temp = list()
+  for(t in trans_types){
+
+    # Param plot
+    params_nms = row.names(psummary)[row.names(psummary) %like% t]
+    params = list()
+    for(p in params_nms){
+      params[[p]] = rstan::extract(pest[[cutoff_ind]], par=p)[[p]]
+    }
+
+    # Now I just need to translate standardized densty back to true density.
+    density_vals = seq(-2, 3, len=20)
+    temp_vals = seq(-2, 2, len=20)
+
+    dens_effects = sapply(density_vals, function(d) {pnorm(params[[paste0('beta_', t, '0')]] + 
+                                                           params[[paste0('beta_', t, '_density')]]*d + 
+                                                           params[[paste0('beta_', t, '_tadpole')]] +
+                                                           params[[paste0('beta_', t, '_temp')]]*0)})
+
+    temp_effects = sapply(temp_vals, function(d) {pnorm(params[[paste0('beta_', t, '0')]] + 
+                                                           params[[paste0('beta_', t, '_density')]]*0 + 
+                                                           params[[paste0('beta_', t, '_tadpole')]] +
+                                                           params[[paste0('beta_', t, '_temp')]]*d)})
+
+    effects_ul = data.table(t(apply(dens_effects, 2, quantile, c(0.025, 0.5, 0.975))))
+    effects_temp_ul = data.table(t(apply(temp_effects, 2, quantile, c(0.025, 0.5, 0.975))))
+
+    colnames(effects_ul) = c("lower", "med", "upper")
+    effects_ul$density = density_vals
+    effects_ul$param = t
+    effect_plots[[t]] = effects_ul
+
+    colnames(effects_temp_ul) = c("lower", "med", "upper")
+    effects_temp_ul$temperature = temp_vals
+    effects_temp_ul$param = t
+    effect_plots_temp[[t]] = effects_temp_ul
+
+
+  }
+
+  effect_plots_dt = do.call(rbind, effect_plots) 
+  effect_plots_dt$density_natural = 10^(effect_plots_dt$density*mean_sd[2] + mean_sd[1])
+
+  effect_plots_temp_dt = do.call(rbind, effect_plots_temp) 
+  effect_plots_temp_dt$temperature_natural = effect_plots_temp_dt$temperature*mean_sd_temp[2] + mean_sd_temp[1]
+
+  #scale_color_manual(values=c('#1b9e77','#d95f02','#7570b3'))
+
+  col = '#1b9e77'
+  p1 = ggplot(effect_plots_dt[param == 'omega']) + geom_line(aes(x=density_natural, y=med), color=col) + 
+                            geom_ribbon(aes(x=density_natural, ymin=lower, ymax=upper), fill=col, alpha=0.3) +
+                            scale_x_log10() +
+                            ylim(c(0, 1)) + theme_classic() + ylab("Yearly probability of remaining\nin low prevalence state (\u03C9)") + 
+                            xlab("Host abundance") + annotate("text", x = 10, y = .25, size=2.5, label = "Weak effect,\nopposite direction of\na priori prediction")
+
+  p2 = ggplot(effect_plots_dt[param == 'phi']) + geom_line(aes(x=density_natural, y=med), color=col) + 
+                            geom_ribbon(aes(x=density_natural, ymin=lower, ymax=upper), fill=col, alpha=0.3) +
+                            scale_x_log10() +
+                            ylim(c(0, 1)) + theme_classic() + ylab("Yearly probability of\ntransitioning to Bd-free state (\u03C6)") + 
+                            xlab("Host abundance") + annotate("text", x = 10, y = .25, size=2.5, label = "Weak effect,\nsame direction as\na priori prediction")
+
+  p3 = ggplot(effect_plots_temp_dt[param == 'omega']) + geom_line(aes(x=temperature_natural, y=med), color=col) + 
+                            geom_ribbon(aes(x=temperature_natural, ymin=lower, ymax=upper), alpha=0.3, fill=col) +
+                            ylim(c(0, 1)) + theme_classic() + ylab("Yearly probability of remaining\nin low prevalence state (\u03C9)") + 
+                            xlab("Maximum summer air temperature (C)")
+
+  p4 = ggplot(effect_plots_temp_dt[param == 'phi']) + geom_line(aes(x=temperature_natural, y=med), color=col) + 
+                            geom_ribbon(aes(x=temperature_natural, ymin=lower, ymax=upper), alpha=0.3, fill=col) +
+                            ylim(c(0, 1)) + theme_classic() + ylab("Yearly probability of \ntransitioning to Bd-free state (\u03C6)") + 
+                            xlab("Maximum summer air temperature (C)")
+  eplot = (p1 + p2) / (p3 + p4) + plot_annotation(tag_levels="A", tag_suffix=".")
+  ggsave("../results/effect_plots.jpg", width=7, height=5)
+
+  
 }
 
 
@@ -311,8 +456,11 @@ if(make_tadpole_plots){
 
   loss_dt$site_id = stan_data$included_sites[loss_dt$lid]
   trun_dt = loss_dt[loss_dt$tad %in% c(0), ]
-  tad_plot = ggplot(loss_dt, aes(x=tad, y=y)) + geom_jitter(width=0.05, height=0.05) + stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE) + 
+  counts = as.data.table(loss_dt)[, .(prop=sum(y) / length(y), count=length(y)), by=.(tad)]
+  tad_plot = ggplot(loss_dt, aes(x=tad, y=y)) + geom_jitter(width=0.05, height=0.05, color='gray', alpha=0.5) + stat_smooth(method="glm", method.args=list(family="binomial"), se=TRUE) + 
                                      # geom_label(data=trun_dt, aes(x=tad, y=seq(0.2, 0.8, len=nrow(trun_dt)), label=site_id)) +
+                                     geom_point(data=counts, aes(x=tad, y=prop, size=count + 10), color='black', shape=17) +
+                                     guides(size='none') +
                                      theme_classic() + xlab("Tadpole absence/presence") + 
                                      ylab("Observed loss of Bd in time step\nphi: 1=loss, 0=no loss")
   dens_plot = ggplot(loss_dt, aes(x=density, y=y)) + geom_jitter(width=0.05, height=0.05) + stat_smooth(method="glm", method.args=list(family="binomial"), se=FALSE)                               
@@ -340,12 +488,14 @@ if(make_tadpole_plots){
   loss_dt$site_id = stan_data$included_sites[loss_dt$lid]
   temp_plot = ggplot() + geom_jitter(data=loss_dt[loss_dt$snow < 0, ], aes(x=temp, y=y, color="Less severe winter"), height=0.05) + 
                          geom_jitter(data=loss_dt[loss_dt$snow > 0 & loss_dt$snow < 1, ], aes(x=temp, y=y, color="More severe winter"), height=0.05) +
-                                     stat_smooth(data=loss_dt[loss_dt$snow < 0, ], aes(x=temp, y=y, color="Less severe winter"), method="glm", method.args=list(family="binomial"), se=FALSE) + 
-                                     stat_smooth(data=loss_dt[loss_dt$snow > 0 & loss_dt$snow < 1, ], aes(x=temp, y=y, color="More severe winter"), method="glm", method.args=list(family="binomial"), se=FALSE) + 
+                                     stat_smooth(data=loss_dt[loss_dt$snow < 0, ], aes(x=temp, y=y, color="Less severe winter", fill="Less severe winter"), method="glm", method.args=list(family="binomial"), se=TRUE) + 
+                                     stat_smooth(data=loss_dt[loss_dt$snow > 0 & loss_dt$snow < 1, ], aes(x=temp, y=y, color="More severe winter", fill="More severe winter"), method="glm", method.args=list(family="binomial"), se=TRUE) + 
                                      theme_classic() + xlab("Maximum summer temperature (standardized)") + 
                                      ylab("Probability of remaining in low prevalence state\nomega: 1=remain, 0=to high prevalence") +
-                                     theme(legend.position=c(0.7,0.3),
-                                           legend.title = element_blank())
+                                     guides(fill="none") +
+                                     theme(legend.position=c(0.7,0.25),
+                                           legend.title = element_blank(),
+                                           legend.background=element_rect(fill="transparent"))
       
 
   # Combine tadpole and temperature plots
@@ -371,7 +521,7 @@ if(explore_density_effect){
 
   cutoffs = c(0.25, 0.3333, 0.5)
   looic_vals = array(NA, dim=c(length(cutoffs), 2))
-  looic_vals_temp = array(NA, dim=c(length(cutoffs), 2))
+  bf_vals = array(NA, dim=c(length(cutoffs)))
   for(i in 1:length(cutoffs)){
 
 
@@ -384,21 +534,29 @@ if(explore_density_effect){
     # Fit null model with no density effect
     null_mod = stan_model(file="stan_files/hmm_occupancy_fourstates_covariates_imputation_no_density.stan")
     fit_null_mod = sampling(null_mod, data=stan_data, iter=2000, warmup=1000, chains=3, cores=3,
-                            include=TRUE, pars=c("log_lik"))
+                            include=TRUE)#, pars=c("log_lik"))
+    fit_null_mod_marginal = bridge_sampler(fit_null_mod)
+    error_measures(fit_null_mod_marginal)
 
     # Fit model with negative density effect
     neg_mod = stan_model(file="stan_files/hmm_occupancy_fourstates_covariates_imputation_negative_density.stan")
     fit_neg_mod = sampling(neg_mod, data=stan_data, iter=2000, warmup=1000, chains=3, cores=3,
-                           include=TRUE, pars=c("log_lik"))
+                           include=TRUE)#, pars=c("log_lik"))
+    fit_neg_mod_marginal = bridge_sampler(fit_neg_mod)
 
-    loovals_null = loo(fit_null_mod)
-    loovals_neg = loo(fit_neg_mod)
-    looic_vals[i, 1] = loovals_null$estimates[3, 1]
-    looic_vals[i, 2] = loovals_neg$estimates[3, 1]
+    # Compute baye factor
+    bayes_factor = bf(fit_null_mod_marginal, fit_neg_mod_marginal)
+    bf_vals[i] = bayes_factor$bf
+
+    # loovals_null = loo(fit_null_mod)
+    # loovals_neg = loo(fit_neg_mod)
+    # looic_vals[i, 1] = loovals_null$estimates[3, 1]
+    # looic_vals[i, 2] = loovals_neg$estimates[3, 1]
   }
 
-  # Save LOO results
-  saveRDS(looic_vals, "../results/looic_values_density_models_no_rarify_all_cutoffs.rds")
+  # Save LOO and Bayes Factor results
+  # saveRDS(looic_vals, "../results/looic_values_density_models_no_rarify_all_cutoffs.rds")
+  saveRDS(bf_vals, "../results/bayesfactor_values_density_models_no_rarify_all_cutoffs.rds")
 }
 
 
